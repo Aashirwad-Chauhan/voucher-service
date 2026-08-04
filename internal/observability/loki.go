@@ -2,10 +2,8 @@ package observability
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
