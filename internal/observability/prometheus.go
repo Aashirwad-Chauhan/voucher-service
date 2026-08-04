@@ -52,8 +52,8 @@ func NewPromPusher(cfg *config.Config) *PromPusher {
 func (pp *PromPusher) worker() {
 	defer pp.wg.Done()
 
-	// High-frequency 1-second ticker for near-instant Grafana Cloud metric updates
-	ticker := time.NewTicker(1 * time.Second)
+	// Standard 15-second ticker to minimize CPU and GC overhead
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
 	for {

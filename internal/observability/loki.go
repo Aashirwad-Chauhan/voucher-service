@@ -66,7 +66,8 @@ func (lp *LokiPusher) Push(logLine string) {
 func (lp *LokiPusher) worker() {
 	defer lp.wg.Done()
 
-	ticker := time.NewTicker(1 * time.Second)
+	// 5-second ticker for log buffer flushing to reduce CPU & network overhead
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	var buffer []string
