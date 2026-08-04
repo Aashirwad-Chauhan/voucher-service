@@ -46,6 +46,11 @@ func main() {
 		defer lokiPusher.Close()
 	}
 
+	promPusher := observability.NewPromPusher(cfg)
+	if promPusher != nil {
+		defer promPusher.Close()
+	}
+
 	dualWriter := observability.NewDualWriter(lokiPusher)
 	jsonHandler := slog.NewJSONHandler(dualWriter, &slog.HandlerOptions{Level: logLevel})
 	logger := slog.New(jsonHandler)

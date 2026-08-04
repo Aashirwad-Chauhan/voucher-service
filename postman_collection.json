@@ -1,0 +1,227 @@
+{
+	"info": {
+		"_postman_id": "voucher-service-collection",
+		"name": "Voucher Redemption Service",
+		"description": "Postman collection for testing the Idempotent Voucher Redemption Service.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "voucherCode",
+			"value": "POSTMAN2026",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health & System",
+			"item": [
+				{
+					"name": "Liveness Probe (GET /healthz)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/healthz",
+							"host": ["{{baseUrl}}"],
+							"path": ["healthz"]
+						}
+					}
+				},
+				{
+					"name": "Readiness Probe (GET /readyz)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/readyz",
+							"host": ["{{baseUrl}}"],
+							"path": ["readyz"]
+						}
+					}
+				},
+				{
+					"name": "Prometheus Metrics (GET /metrics)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/metrics",
+							"host": ["{{baseUrl}}"],
+							"path": ["metrics"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "Vouchers",
+			"item": [
+				{
+					"name": "1. Create Voucher (POST /vouchers)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"{{voucherCode}}\",\n  \"max_redemptions\": 3\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers"]
+						}
+					}
+				},
+				{
+					"name": "2. Create Single-Use Voucher (Default max_redemptions = 1)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"SINGLEUSE2026\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers"]
+						}
+					}
+				},
+				{
+					"name": "3. Redeem Voucher (POST /vouchers/{code}/redeem)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"user_id\": \"user-101\",\n  \"idempotency_key\": \"txn-key-001\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/{{voucherCode}}/redeem",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "{{voucherCode}}", "redeem"]
+						}
+					}
+				},
+				{
+					"name": "4. Idempotent Replay (Same Key + Same Payload -> 200)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"user_id\": \"user-101\",\n  \"idempotency_key\": \"txn-key-001\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/{{voucherCode}}/redeem",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "{{voucherCode}}", "redeem"]
+						}
+					}
+				},
+				{
+					"name": "5. Idempotent Conflict (Same Key + Different Payload -> 409)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"user_id\": \"DIFFERENT_USER\",\n  \"idempotency_key\": \"txn-key-001\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/{{voucherCode}}/redeem",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "{{voucherCode}}", "redeem"]
+						}
+					}
+				},
+				{
+					"name": "6. Get Voucher Status (GET /vouchers/{code})",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/{{voucherCode}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "{{voucherCode}}"]
+						}
+					}
+				},
+				{
+					"name": "7. Redeem Exhausted Voucher (422 Unprocessable Entity)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"user_id\": \"user-102\",\n  \"idempotency_key\": \"txn-key-002\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/SINGLEUSE2026/redeem",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "SINGLEUSE2026", "redeem"]
+						}
+					}
+				},
+				{
+					"name": "8. Redeem Unknown Voucher (404 Not Found)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"user_id\": \"user-103\",\n  \"idempotency_key\": \"txn-key-003\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vouchers/NONEXISTENT/redeem",
+							"host": ["{{baseUrl}}"],
+							"path": ["vouchers", "NONEXISTENT", "redeem"]
+						}
+					}
+				}
+			]
+		}
+	]
+}
