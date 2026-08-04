@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -33,11 +35,10 @@ func NewPromPusher(cfg *config.Config) *PromPusher {
 		url:      cfg.GrafanaPromURL,
 		userID:   cfg.GrafanaPromUser,
 		apiKey:   cfg.GrafanaPromKey,
-		client:   &http.Client{Timeout: 10 * time.Second},
+		client:   &http.Client{Timeout: 5 * time.Second},
 		stopChan: make(chan struct{}),
 	}
 
-	// Append /push if not present
 	if !bytes.HasSuffix([]byte(cfg.GrafanaPromURL), []byte("/push")) && !bytes.HasSuffix([]byte(cfg.GrafanaPromURL), []byte("/push/")) {
 		pp.url = cfg.GrafanaPromURL + "/push"
 	}
@@ -51,7 +52,8 @@ func NewPromPusher(cfg *config.Config) *PromPusher {
 func (pp *PromPusher) worker() {
 	defer pp.wg.Done()
 
-	ticker := time.NewTicker(10 * time.Second)
+	// High-frequency 1-second ticker for near-instant Grafana Cloud metric updates
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -75,36 +77,79 @@ func (pp *PromPusher) pushMetrics() {
 	nowMs := time.Now().UnixMilli()
 
 	for _, mf := range metricFamilies {
-		name := mf.GetName()
+		baseName := mf.GetName()
 		for _, m := range mf.GetMetric() {
-			var labels []prompb.Label
-			labels = append(labels, prompb.Label{Name: "__name__", Value: name})
-			labels = append(labels, prompb.Label{Name: "app", Value: "voucher-service"})
-			labels = append(labels, prompb.Label{Name: "env", Value: "production"})
-
+			baseLabels := []prompb.Label{
+				{Name: "app", Value: "voucher-service"},
+				{Name: "env", Value: "production"},
+			}
 			for _, l := range m.GetLabel() {
-				labels = append(labels, prompb.Label{Name: l.GetName(), Value: l.GetValue()})
+				baseLabels = append(baseLabels, prompb.Label{Name: l.GetName(), Value: l.GetValue()})
 			}
 
-			var val float64
 			if m.Counter != nil {
-				val = m.Counter.GetValue()
+				labels := append([]prompb.Label{{Name: "__name__", Value: baseName}}, baseLabels...)
+				timeSeries = append(timeSeries, prompb.TimeSeries{
+					Labels:  labels,
+					Samples: []prompb.Sample{{Value: m.Counter.GetValue(), Timestamp: nowMs}},
+				})
 			} else if m.Gauge != nil {
-				val = m.Gauge.GetValue()
+				labels := append([]prompb.Label{{Name: "__name__", Value: baseName}}, baseLabels...)
+				timeSeries = append(timeSeries, prompb.TimeSeries{
+					Labels:  labels,
+					Samples: []prompb.Sample{{Value: m.Gauge.GetValue(), Timestamp: nowMs}},
+				})
 			} else if m.Histogram != nil {
-				val = float64(m.Histogram.GetSampleCount())
-			} else if m.Summary != nil {
-				val = float64(m.Summary.GetSampleCount())
-			} else {
-				continue
-			}
+				h := m.Histogram
 
-			timeSeries = append(timeSeries, prompb.TimeSeries{
-				Labels: labels,
-				Samples: []prompb.Sample{
-					{Value: val, Timestamp: nowMs},
-				},
-			})
+				// 1. _count
+				countLabels := append([]prompb.Label{{Name: "__name__", Value: baseName + "_count"}}, baseLabels...)
+				timeSeries = append(timeSeries, prompb.TimeSeries{
+					Labels:  countLabels,
+					Samples: []prompb.Sample{{Value: float64(h.GetSampleCount()), Timestamp: nowMs}},
+				})
+
+				// 2. _sum
+				sumLabels := append([]prompb.Label{{Name: "__name__", Value: baseName + "_sum"}}, baseLabels...)
+				timeSeries = append(timeSeries, prompb.TimeSeries{
+					Labels:  sumLabels,
+					Samples: []prompb.Sample{{Value: h.GetSampleSum(), Timestamp: nowMs}},
+				})
+
+				// 3. _bucket
+				hasInf := false
+				for _, b := range h.GetBucket() {
+					upperBound := b.GetUpperBound()
+					leStr := strconv.FormatFloat(upperBound, 'f', -1, 64)
+					if math.IsInf(upperBound, 1) {
+						leStr = "+Inf"
+						hasInf = true
+					}
+
+					bucketLabels := append([]prompb.Label{
+						{Name: "__name__", Value: baseName + "_bucket"},
+						{Name: "le", Value: leStr},
+					}, baseLabels...)
+
+					timeSeries = append(timeSeries, prompb.TimeSeries{
+						Labels:  bucketLabels,
+						Samples: []prompb.Sample{{Value: float64(b.GetCumulativeCount()), Timestamp: nowMs}},
+					})
+				}
+
+				// Ensure +Inf bucket is present for PromQL histogram_quantile
+				if !hasInf {
+					infBucketLabels := append([]prompb.Label{
+						{Name: "__name__", Value: baseName + "_bucket"},
+						{Name: "le", Value: "+Inf"},
+					}, baseLabels...)
+
+					timeSeries = append(timeSeries, prompb.TimeSeries{
+						Labels:  infBucketLabels,
+						Samples: []prompb.Sample{{Value: float64(h.GetSampleCount()), Timestamp: nowMs}},
+					})
+				}
+			}
 		}
 	}
 
@@ -140,8 +185,6 @@ func (pp *PromPusher) pushMetrics() {
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		slog.Warn("prom_remote_write_rejected", slog.Int("status", resp.StatusCode), slog.String("body", string(respBody)))
-	} else {
-		slog.Debug("prom_remote_write_success", slog.Int("metrics_count", len(timeSeries)))
 	}
 }
 

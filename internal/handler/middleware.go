@@ -28,6 +28,14 @@ var (
 		[]string{"method", "path", "status"},
 	)
 
+	HttpErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_errors_total",
+			Help: "Total number of HTTP error responses (status >= 400)",
+		},
+		[]string{"method", "path", "status"},
+	)
+
 	HttpRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
@@ -92,10 +100,16 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			duration := time.Since(start)
 			path := r.URL.Path
+			statusStr := strconv.Itoa(sw.statusCode)
 
 			// Update Prometheus metrics
-			HttpRequestsTotal.WithLabelValues(r.Method, path, strconv.Itoa(sw.statusCode)).Inc()
+			HttpRequestsTotal.WithLabelValues(r.Method, path, statusStr).Inc()
 			HttpRequestDuration.WithLabelValues(r.Method, path).Observe(duration.Seconds())
+
+			// Track errors specifically
+			if sw.statusCode >= 400 {
+				HttpErrorsTotal.WithLabelValues(r.Method, path, statusStr).Inc()
+			}
 		})
 	}
 }
