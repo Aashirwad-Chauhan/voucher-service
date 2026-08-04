@@ -84,11 +84,11 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			corrID := GetCorrelationID(r.Context())
 
 			next.ServeHTTP(sw, r)
 
 			duration := time.Since(start)
-			corrID := GetCorrelationID(r.Context())
 			path := r.URL.Path
 
 			// Update Prometheus metrics
@@ -96,6 +96,7 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			HttpRequestDuration.WithLabelValues(r.Method, path).Observe(duration.Seconds())
 
 			logger.Info("http_request",
+				slog.String("trace_id", corrID),
 				slog.String("correlation_id", corrID),
 				slog.String("method", r.Method),
 				slog.String("path", path),
@@ -114,6 +115,7 @@ func RecoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				if err := recover(); err != nil {
 					corrID := GetCorrelationID(r.Context())
 					logger.Error("panic_recovered",
+						slog.String("trace_id", corrID),
 						slog.String("correlation_id", corrID),
 						slog.Any("error", err),
 						slog.String("stack", string(debug.Stack())),

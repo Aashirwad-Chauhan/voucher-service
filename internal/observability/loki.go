@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -42,7 +44,7 @@ func NewLokiPusher(cfg *config.Config) *LokiPusher {
 		userID:   cfg.GrafanaLokiUser,
 		apiKey:   cfg.GrafanaAPIKey,
 		client:   &http.Client{Timeout: 5 * time.Second},
-		logChan:  make(chan string, 1000),
+		logChan:  make(chan string, 2000),
 		stopChan: make(chan struct{}),
 	}
 
@@ -59,14 +61,14 @@ func (lp *LokiPusher) Push(logLine string) {
 	select {
 	case lp.logChan <- logLine:
 	default:
-		// channel full, drop log to avoid blocking app
+		// Drop log under extreme channel saturation to avoid backpressure on main application
 	}
 }
 
 func (lp *LokiPusher) worker() {
 	defer lp.wg.Done()
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	var buffer []string
@@ -79,7 +81,7 @@ func (lp *LokiPusher) worker() {
 				return
 			}
 			buffer = append(buffer, line)
-			if len(buffer) >= 50 {
+			if len(buffer) >= 100 {
 				lp.flush(buffer)
 				buffer = nil
 			}
@@ -146,27 +148,22 @@ func (lp *LokiPusher) Close() {
 	lp.wg.Wait()
 }
 
-// MultiHandler wraps slog.Handler and forwards logs to LokiPusher in addition to stdout.
-type MultiHandler struct {
-	slog.Handler
+type DualWriter struct {
 	pusher *LokiPusher
+	out    io.Writer
 }
 
-func NewMultiHandler(h slog.Handler, pusher *LokiPusher) *MultiHandler {
-	return &MultiHandler{Handler: h, pusher: pusher}
-}
-
-func (m *MultiHandler) Handle(ctx context.Context, record slog.Record) error {
-	err := m.Handler.Handle(ctx, record)
-	if m.pusher != nil {
-		// Quick JSON format for Loki
-		buf := &bytes.Buffer{}
-		_ = json.NewEncoder(buf).Encode(map[string]any{
-			"time":  record.Time,
-			"level": record.Level.String(),
-			"msg":   record.Message,
-		})
-		m.pusher.Push(buf.String())
+func NewDualWriter(pusher *LokiPusher) io.Writer {
+	return &DualWriter{
+		pusher: pusher,
+		out:    os.Stdout,
 	}
-	return err
+}
+
+func (w *DualWriter) Write(p []byte) (int, error) {
+	n, err := w.out.Write(p)
+	if w.pusher != nil {
+		w.pusher.Push(string(p))
+	}
+	return n, err
 }

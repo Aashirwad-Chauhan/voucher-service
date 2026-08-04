@@ -35,8 +35,6 @@ func main() {
 		logLevel = slog.LevelInfo
 	}
 
-	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
-
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed_to_load_config", slog.Any("error", err))
@@ -48,7 +46,9 @@ func main() {
 		defer lokiPusher.Close()
 	}
 
-	logger := slog.New(observability.NewMultiHandler(jsonHandler, lokiPusher))
+	dualWriter := observability.NewDualWriter(lokiPusher)
+	jsonHandler := slog.NewJSONHandler(dualWriter, &slog.HandlerOptions{Level: logLevel})
+	logger := slog.New(jsonHandler)
 	slog.SetDefault(logger)
 
 	logger.Info("starting_voucher_service",
