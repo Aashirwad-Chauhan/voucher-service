@@ -99,7 +99,7 @@ func main() {
 	svc := service.NewVoucherService(repo)
 
 	voucherHandler := handler.NewVoucherHandler(svc, logger)
-	healthHandler := handler.NewHealthHandler(repo)
+	healthHandler := handler.NewHealthHandler(repo, logger)
 
 	// 5. Router Setup
 	r := chi.NewRouter()

@@ -46,7 +46,7 @@ func (m *mockService) GetVoucher(ctx context.Context, code string) (*model.Vouch
 func setupRouter(svc *mockService) *chi.Mux {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vHandler := handler.NewVoucherHandler(svc, logger)
-	hHandler := handler.NewHealthHandler(&mockRepoPing{})
+	hHandler := handler.NewHealthHandler(&mockRepoPing{}, logger)
 
 	r := chi.NewRouter()
 	r.Use(handler.TraceIDMiddleware)

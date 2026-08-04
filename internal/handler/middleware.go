@@ -51,7 +51,7 @@ func TraceIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		traceID := r.Header.Get("X-Trace-ID")
 		if traceID == "" {
-			traceID = r.Header.Get("X-Correlation-ID") // fallback support
+			traceID = r.Header.Get("X-Correlation-ID")
 		}
 		if traceID == "" {
 			traceID = uuid.New().String()
@@ -81,13 +81,12 @@ func (sw *statusResponseWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
-// RequestLogger logs HTTP requests and updates metrics.
+// RequestLogger updates Prometheus metrics and logs request completion cleanly.
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-			traceID := GetTraceID(r.Context())
 
 			next.ServeHTTP(sw, r)
 
@@ -97,14 +96,6 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			// Update Prometheus metrics
 			HttpRequestsTotal.WithLabelValues(r.Method, path, strconv.Itoa(sw.statusCode)).Inc()
 			HttpRequestDuration.WithLabelValues(r.Method, path).Observe(duration.Seconds())
-
-			logger.Info("http_request",
-				slog.String("trace_id", traceID),
-				slog.String("method", r.Method),
-				slog.String("path", path),
-				slog.Int("status", sw.statusCode),
-				slog.Int64("latency_ms", duration.Milliseconds()),
-			)
 		})
 	}
 }
@@ -116,8 +107,11 @@ func RecoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if err := recover(); err != nil {
 					traceID := GetTraceID(r.Context())
-					logger.Error("panic_recovered",
+					logger.Error("request_failed",
 						slog.String("trace_id", traceID),
+						slog.String("method", r.Method),
+						slog.String("path", r.URL.Path),
+						slog.Int("status", http.StatusInternalServerError),
 						slog.Any("error", err),
 						slog.String("stack", string(debug.Stack())),
 					)

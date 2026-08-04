@@ -4,7 +4,7 @@ param(
 )
 
 $code = "burst-ps-" + [DateTimeOffset]::Now.ToUnixTimeSeconds()
-Write-Host "==========================================" -ForegroundColor Cipher
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "   Voucher Service Burst Gate (PowerShell)" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Target URL:  $BaseUrl"
@@ -17,10 +17,10 @@ $createBody = @{ code = $code; max_redemptions = 1 } | ConvertTo-Json
 $createResp = Invoke-RestMethod -Uri "$BaseUrl/vouchers" -Method Post -Body $createBody -ContentType "application/json"
 Write-Host "Voucher created: remaining = $($createResp.remaining)"
 
-# Fire concurrent requests using background tasks
-$tasks = 1..$Concurrency | ForEach-Object {
+# Fire concurrent requests using background jobs
+$jobs = 1..$Concurrency | ForEach-Object {
     $i = $_
-    Start-ThreadJob -ScriptBlock {
+    Start-Job -ScriptBlock {
         param($url, $voucherCode, $index)
         $body = @{ user_id = "user-$index"; idempotency_key = "burst-key-$voucherCode-$index" } | ConvertTo-Json
         try {
@@ -35,7 +35,8 @@ $tasks = 1..$Concurrency | ForEach-Object {
     } -ArgumentList $BaseUrl, $code, $i
 }
 
-$results = $tasks | Receive-Job -Wait -AutoRemoveJob
+$results = $jobs | Wait-Job | Receive-Job
+$jobs | Remove-Job -Force
 
 $successes = ($results | Where-Object { $_ -eq 200 }).Count
 $exhausted = ($results | Where-Object { $_ -eq 422 }).Count
