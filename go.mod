@@ -1,6 +1,6 @@
 module github.com/aashirwad/voucher-service
 
-go 1.25.0
+go 1.24
 
 require (
 	github.com/go-chi/chi/v5 v5.3.1
