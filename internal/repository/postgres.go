@@ -72,7 +72,7 @@ func (r *PostgresRepository) RedeemVoucher(ctx context.Context, code, userID, id
 	idempotencyQuery := `
 		SELECT fingerprint, response_code, response_body
 		FROM idempotency_keys
-		WHERE key = $1
+		WHERE key = $1 AND created_at > NOW() - INTERVAL '24 hours'
 	`
 	err = tx.QueryRow(ctx, idempotencyQuery, idempotencyKey).Scan(
 		&existingFingerprint, &existingRespCode, &existingRespBody,
@@ -178,6 +178,15 @@ func (r *PostgresRepository) GetVoucher(ctx context.Context, code string) (*mode
 	}
 
 	return &resp, nil
+}
+
+func (r *PostgresRepository) CleanExpiredIdempotencyKeys(ctx context.Context) (int64, error) {
+	query := `DELETE FROM idempotency_keys WHERE created_at < NOW() - INTERVAL '24 hours'`
+	tag, err := r.pool.Exec(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("failed to clean expired idempotency keys: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func computeFingerprint(voucherCode, userID string) string {

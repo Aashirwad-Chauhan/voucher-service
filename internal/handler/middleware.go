@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/aashirwad/voucher-service/internal/model"
@@ -138,6 +139,83 @@ func RecoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 					})
 				}
 			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func NewRateLimiter(limit int, window time.Duration) *rateLimiter {
+	rl := &rateLimiter{
+		requests: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+	// Cleanup routine every minute
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		for range ticker.C {
+			rl.mu.Lock()
+			now := time.Now()
+			for ip, times := range rl.requests {
+				var valid []time.Time
+				for _, t := range times {
+					if now.Sub(t) < window {
+						valid = append(valid, t)
+					}
+				}
+				if len(valid) == 0 {
+					delete(rl.requests, ip)
+				} else {
+					rl.requests[ip] = valid
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}()
+	return rl
+}
+
+// RateLimiterMiddleware enforces in-memory rate limiting per IP address.
+func RateLimiterMiddleware(limit int, window time.Duration) func(http.Handler) http.Handler {
+	rl := NewRateLimiter(limit, window)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+
+			rl.mu.Lock()
+			now := time.Now()
+			times := rl.requests[ip]
+
+			var valid []time.Time
+			for _, t := range times {
+				if now.Sub(t) < window {
+					valid = append(valid, t)
+				}
+			}
+
+			if len(valid) >= limit {
+				rl.mu.Unlock()
+				traceID := GetTraceID(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(model.ErrorResponse{
+					Error:   "rate_limit_exceeded",
+					Message: "Too many requests. Please slow down.",
+				})
+				_ = traceID
+				return
+			}
+
+			rl.requests[ip] = append(valid, now)
+			rl.mu.Unlock()
+
 			next.ServeHTTP(w, r)
 		})
 	}

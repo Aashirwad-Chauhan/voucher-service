@@ -105,8 +105,25 @@ func main() {
 	r := chi.NewRouter()
 
 	r.Use(handler.TraceIDMiddleware)
+	r.Use(handler.RateLimiterMiddleware(300, 1*time.Minute)) // 300 requests per minute per IP
 	r.Use(handler.RequestLogger(logger))
 	r.Use(handler.RecoveryMiddleware(logger))
+
+	// 5b. Idempotency Key 24-hour TTL Cleaner Worker
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			deleted, err := repo.CleanExpiredIdempotencyKeys(cleanCtx)
+			cleanCancel()
+			if err != nil {
+				logger.Warn("idempotency_ttl_cleaner_failed", slog.Any("error", err))
+			} else if deleted > 0 {
+				logger.Info("idempotency_ttl_cleaned", slog.Int64("deleted_keys", deleted))
+			}
+		}
+	}()
 
 	// Health & Metrics
 	r.Get("/healthz", healthHandler.Healthz)
