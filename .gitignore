@@ -1,0 +1,37 @@
+# Secrets - NEVER commit
+secrets.txt
+.env
+.env.local
+.env.production
+
+# Assignment (do not push)
+assignment-aashirwad-voucher-redemption-challenge.pdf
+IMPLEMENTATION_GUIDE.md
+
+# Go
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Binary
+/server
+/voucher-service
