@@ -49,7 +49,7 @@ func setupRouter(svc *mockService) *chi.Mux {
 	hHandler := handler.NewHealthHandler(&mockRepoPing{})
 
 	r := chi.NewRouter()
-	r.Use(handler.CorrelationIDMiddleware)
+	r.Use(handler.TraceIDMiddleware)
 	r.Use(handler.RequestLogger(logger))
 
 	r.Get("/healthz", hHandler.Healthz)
@@ -166,8 +166,8 @@ func TestRedeemVoucherEndpoint_StatusCodes(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Errorf("For code %s expected status %d, got %d", tt.code, tt.wantStatus, rec.Code)
 			}
-			if rec.Header().Get("X-Correlation-ID") == "" {
-				t.Errorf("X-Correlation-ID header should be present")
+			if rec.Header().Get("X-Trace-ID") == "" {
+				t.Errorf("X-Trace-ID header should be present")
 			}
 		})
 	}

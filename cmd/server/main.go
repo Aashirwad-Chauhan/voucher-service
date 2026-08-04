@@ -99,7 +99,7 @@ func main() {
 	// 5. Router Setup
 	r := chi.NewRouter()
 
-	r.Use(handler.CorrelationIDMiddleware)
+	r.Use(handler.TraceIDMiddleware)
 	r.Use(handler.RequestLogger(logger))
 	r.Use(handler.RecoveryMiddleware(logger))
 

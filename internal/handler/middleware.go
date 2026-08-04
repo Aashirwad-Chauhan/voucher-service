@@ -17,7 +17,7 @@ import (
 
 type contextKey string
 
-const CorrelationIDKey contextKey = "correlation_id"
+const TraceIDKey contextKey = "trace_id"
 
 var (
 	HttpRequestsTotal = promauto.NewCounterVec(
@@ -46,23 +46,26 @@ var (
 	)
 )
 
-// CorrelationIDMiddleware ensures every request has an X-Correlation-ID header and context value.
-func CorrelationIDMiddleware(next http.Handler) http.Handler {
+// TraceIDMiddleware ensures every request has an X-Trace-ID header and context value.
+func TraceIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		corrID := r.Header.Get("X-Correlation-ID")
-		if corrID == "" {
-			corrID = uuid.New().String()
+		traceID := r.Header.Get("X-Trace-ID")
+		if traceID == "" {
+			traceID = r.Header.Get("X-Correlation-ID") // fallback support
+		}
+		if traceID == "" {
+			traceID = uuid.New().String()
 		}
 
-		w.Header().Set("X-Correlation-ID", corrID)
-		ctx := context.WithValue(r.Context(), CorrelationIDKey, corrID)
+		w.Header().Set("X-Trace-ID", traceID)
+		ctx := context.WithValue(r.Context(), TraceIDKey, traceID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// GetCorrelationID extracts the correlation ID from context.
-func GetCorrelationID(ctx context.Context) string {
-	if id, ok := ctx.Value(CorrelationIDKey).(string); ok {
+// GetTraceID extracts the trace ID from context.
+func GetTraceID(ctx context.Context) string {
+	if id, ok := ctx.Value(TraceIDKey).(string); ok {
 		return id
 	}
 	return "unknown"
@@ -84,7 +87,7 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			sw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-			corrID := GetCorrelationID(r.Context())
+			traceID := GetTraceID(r.Context())
 
 			next.ServeHTTP(sw, r)
 
@@ -96,8 +99,7 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			HttpRequestDuration.WithLabelValues(r.Method, path).Observe(duration.Seconds())
 
 			logger.Info("http_request",
-				slog.String("trace_id", corrID),
-				slog.String("correlation_id", corrID),
+				slog.String("trace_id", traceID),
 				slog.String("method", r.Method),
 				slog.String("path", path),
 				slog.Int("status", sw.statusCode),
@@ -113,10 +115,9 @@ func RecoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					corrID := GetCorrelationID(r.Context())
+					traceID := GetTraceID(r.Context())
 					logger.Error("panic_recovered",
-						slog.String("trace_id", corrID),
-						slog.String("correlation_id", corrID),
+						slog.String("trace_id", traceID),
 						slog.Any("error", err),
 						slog.String("stack", string(debug.Stack())),
 					)
