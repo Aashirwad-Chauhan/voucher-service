@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -43,10 +44,10 @@ func (m *mockService) GetVoucher(ctx context.Context, code string) (*model.Vouch
 	return nil, nil
 }
 
-func setupRouter(svc *mockService) *chi.Mux {
+func setupRouter(svc *mockService, pingErr error) *chi.Mux {
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	vHandler := handler.NewVoucherHandler(svc, logger)
-	hHandler := handler.NewHealthHandler(&mockRepoPing{}, logger)
+	hHandler := handler.NewHealthHandler(&mockRepoPing{pingErr: pingErr}, logger)
 
 	r := chi.NewRouter()
 	r.Use(handler.TraceIDMiddleware)
@@ -61,7 +62,9 @@ func setupRouter(svc *mockService) *chi.Mux {
 	return r
 }
 
-type mockRepoPing struct{}
+type mockRepoPing struct {
+	pingErr error
+}
 
 func (m *mockRepoPing) CreateVoucher(ctx context.Context, code string, maxRedemptions int) (*model.Voucher, error) {
 	return nil, nil
@@ -73,11 +76,11 @@ func (m *mockRepoPing) GetVoucher(ctx context.Context, code string) (*model.Vouc
 	return nil, nil
 }
 func (m *mockRepoPing) Ping(ctx context.Context) error {
-	return nil
+	return m.pingErr
 }
 
 func TestHealthzEndpoint(t *testing.T) {
-	r := setupRouter(&mockService{})
+	r := setupRouter(&mockService{}, nil)
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	rec := httptest.NewRecorder()
 
@@ -85,6 +88,18 @@ func TestHealthzEndpoint(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+}
+
+func TestReadyzEndpoint_Failure(t *testing.T) {
+	r := setupRouter(&mockService{}, errors.New("db connection timeout"))
+	req := httptest.NewRequest("GET", "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d", rec.Code)
 	}
 }
 
@@ -99,7 +114,7 @@ func TestCreateVoucherEndpoint(t *testing.T) {
 		},
 	}
 
-	r := setupRouter(svc)
+	r := setupRouter(svc, nil)
 
 	// Test 1: Successful Create (201)
 	body := []byte(`{"code": "SUMMER2026"}`)
@@ -122,6 +137,55 @@ func TestCreateVoucherEndpoint(t *testing.T) {
 	if recDup.Code != http.StatusConflict {
 		t.Errorf("Expected status 409, got %d", recDup.Code)
 	}
+
+	// Test 3: Malformed JSON (400)
+	bodyBad := []byte(`{invalid_json}`)
+	reqBad := httptest.NewRequest("POST", "/vouchers", bytes.NewBuffer(bodyBad))
+	reqBad.Header.Set("Content-Type", "application/json")
+	recBad := httptest.NewRecorder()
+
+	r.ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for bad json, got %d", recBad.Code)
+	}
+}
+
+func TestGetVoucherEndpoint(t *testing.T) {
+	id := uuid.New()
+	svc := &mockService{
+		getFn: func(ctx context.Context, code string) (*model.VoucherStatusResponse, error) {
+			if code == "UNKNOWN" {
+				return nil, model.ErrVoucherNotFound
+			}
+			return &model.VoucherStatusResponse{
+				ID:               id,
+				Code:             code,
+				Remaining:        3,
+				RedemptionsCount: 2,
+				MaxRedemptions:   5,
+			}, nil
+		},
+	}
+
+	r := setupRouter(svc, nil)
+
+	// Test 1: Found (200)
+	req := httptest.NewRequest("GET", "/vouchers/SUMMER2026", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+
+	// Test 2: Not Found (404)
+	req404 := httptest.NewRequest("GET", "/vouchers/UNKNOWN", nil)
+	rec404 := httptest.NewRecorder()
+	r.ServeHTTP(rec404, req404)
+
+	if rec404.Code != http.StatusNotFound {
+		t.Errorf("Expected status 404, got %d", rec404.Code)
+	}
 }
 
 func TestRedeemVoucherEndpoint_StatusCodes(t *testing.T) {
@@ -142,16 +206,16 @@ func TestRedeemVoucherEndpoint_StatusCodes(t *testing.T) {
 		},
 	}
 
-	r := setupRouter(svc)
+	r := setupRouter(svc, nil)
 
 	tests := []struct {
 		code       string
 		wantStatus int
 	}{
-		{"VALID", http.StatusOK},                  // 200
+		{"VALID", http.StatusOK},                      // 200
 		{"EXHAUSTED", http.StatusUnprocessableEntity}, // 422
-		{"UNKNOWN", http.StatusNotFound},           // 404
-		{"CONFLICT", http.StatusConflict},          // 409
+		{"UNKNOWN", http.StatusNotFound},               // 404
+		{"CONFLICT", http.StatusConflict},              // 409
 	}
 
 	for _, tt := range tests {
