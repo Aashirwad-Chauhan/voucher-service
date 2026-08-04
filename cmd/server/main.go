@@ -72,8 +72,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	poolConfig.MaxConns = 25
+	poolConfig.MaxConns = 20
 	poolConfig.MinConns = 2
+	poolConfig.MaxConnIdleTime = 5 * time.Minute
+	poolConfig.MaxConnLifetime = 30 * time.Minute
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
