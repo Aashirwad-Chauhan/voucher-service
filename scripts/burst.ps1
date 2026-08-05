@@ -3,6 +3,9 @@ param(
     [int]$Concurrency = 50
 )
 
+# Ensure System.Net.Http is loaded in Windows PowerShell 5.1 & PowerShell 7
+Add-Type -AssemblyName System.Net.Http
+
 $code = "burst-ps-" + [DateTimeOffset]::Now.ToUnixTimeSeconds()
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "   Voucher Service Burst Gate (PowerShell)" -ForegroundColor Cyan
@@ -16,27 +19,30 @@ Write-Host ""
 $createBody = @{ code = $code; max_redemptions = 1 } | ConvertTo-Json
 $createResp = Invoke-RestMethod -Uri "$BaseUrl/vouchers" -Method Post -Body $createBody -ContentType "application/json"
 Write-Host "Voucher created: remaining = $($createResp.remaining)"
+Write-Host "Firing $Concurrency parallel requests..." -ForegroundColor Cyan
 
-# Fire concurrent requests using background jobs
-$jobs = 1..$Concurrency | ForEach-Object {
-    $i = $_
-    Start-Job -ScriptBlock {
-        param($url, $voucherCode, $index)
-        $body = @{ user_id = "user-$index"; idempotency_key = "burst-key-$voucherCode-$index" } | ConvertTo-Json
+$client = [System.Net.Http.HttpClient]::new()
+$client.Timeout = [TimeSpan]::FromSeconds(15)
+
+$tasks = 1..$Concurrency | ForEach-Object {
+    $index = $_
+    $uri = "$BaseUrl/vouchers/$code/redeem"
+    $json = "{`"user_id`":`"user-$index`",`"idempotency_key`":`"burst-key-$code-$index`"}"
+    
+    [System.Threading.Tasks.Task]::Run([Func[int]]{
         try {
-            $resp = Invoke-WebRequest -Uri "$url/vouchers/$voucherCode/redeem" -Method Post -Body $body -ContentType "application/json" -UseBasicParsing
+            $content = [System.Net.Http.StringContent]::new($json, [System.Text.Encoding]::UTF8, "application/json")
+            $resp = $client.PostAsync($uri, $content).GetAwaiter().GetResult()
             return [int]$resp.StatusCode
         } catch {
-            if ($_.Exception.Response) {
-                return [int]$_.Exception.Response.StatusCode
-            }
             return 500
         }
-    } -ArgumentList $BaseUrl, $code, $i
+    })
 }
 
-$results = $jobs | Wait-Job | Receive-Job
-$jobs | Remove-Job -Force
+[System.Threading.Tasks.Task]::WaitAll($tasks)
+$results = $tasks | ForEach-Object { $_.Result }
+$client.Dispose()
 
 $successes = ($results | Where-Object { $_ -eq 200 }).Count
 $exhausted = ($results | Where-Object { $_ -eq 422 }).Count

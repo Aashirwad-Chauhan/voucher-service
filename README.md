@@ -213,7 +213,7 @@ Executes fast in-memory service, handler, and configuration unit tests:
 go test ./internal/config ./internal/service ./internal/handler -v -cover
 ```
 
-### Concurrent Integration Tests
+### Concurrent Integration Tests & Concurrency Burst Tool
 Executes the **50-goroutine burst test** against PostgreSQL to verify zero over-redemption race conditions:
 ```bash
 # Set test database environment variable
@@ -221,6 +221,16 @@ export TEST_DATABASE_URL="postgres://voucher:voucher@localhost:5432/voucher?sslm
 
 # Run integration tests
 go test ./internal/repository -v -count=1
+```
+
+#### Run Live Concurrency Burst Tool (Cross-Platform Go CLI)
+To test dense parallel traffic (50 simultaneous requests) against a local or production server:
+```bash
+# Test against live Render production deployment:
+go run ./cmd/burst https://voucher-service-c7kf.onrender.com 50
+
+# Test against local server:
+go run ./cmd/burst http://localhost:8080 50
 ```
 
 Or run all tests at once via `Makefile`:
@@ -299,8 +309,10 @@ For a full deep-dive into trade-offs and AI delegation details, see [`WRITEUP.md
 ```
 voucher-service/
 ├── cmd/
-│   └── server/
-│       └── main.go              # Server entrypoint & dependency wiring
+│   ├── server/
+│   │   └── main.go              # Server entrypoint & dependency wiring
+│   └── burst/
+│       └── main.go              # High-concurrency burst testing CLI tool
 ├── internal/
 │   ├── config/                  # Environment configuration loader
 │   ├── handler/                 # HTTP handlers, middleware, rate limiter
@@ -309,7 +321,6 @@ voucher-service/
 │   ├── repository/              # PostgreSQL repository & atomic CAS logic
 │   └── service/                 # Business logic & validation layer
 ├── migrations/                  # Embedded SQL migration scripts
-├── scripts/                     # Burst testing scripts (Bash & PowerShell)
 ├── Dockerfile                   # Multi-stage Alpine container build
 ├── docker-compose.yml           # Local orchestration (App + Postgres)
 ├── Makefile                     # Build & test automation shortcuts

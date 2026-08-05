@@ -29,7 +29,7 @@ var (
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests processed",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "handler", "status"},
 	)
 
 	HttpErrorsTotal = promauto.NewCounterVec(
@@ -37,7 +37,7 @@ var (
 			Name: "http_errors_total",
 			Help: "Total number of HTTP error responses (status >= 400)",
 		},
-		[]string{"method", "path", "status"},
+		[]string{"method", "handler", "status"},
 	)
 
 	HttpRequestDuration = promauto.NewHistogramVec(
@@ -46,7 +46,7 @@ var (
 			Help:    "HTTP request latency in seconds",
 			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
 		},
-		[]string{"method", "path"},
+		[]string{"method", "handler"},
 	)
 
 	VoucherRedemptionsTotal = promauto.NewCounterVec(
@@ -93,6 +93,26 @@ func (sw *statusResponseWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
+func getHandlerName(r *http.Request) string {
+	if rctx := chi.RouteContext(r.Context()); rctx != nil && rctx.RoutePattern() != "" {
+		switch rctx.RoutePattern() {
+		case "/vouchers":
+			return "CreateVoucher"
+		case "/vouchers/{code}/redeem":
+			return "RedeemVoucher"
+		case "/vouchers/{code}":
+			return "GetVoucher"
+		case "/healthz":
+			return "Healthz"
+		case "/readyz":
+			return "Readyz"
+		default:
+			return rctx.RoutePattern()
+		}
+	}
+	return "unknown"
+}
+
 // RequestLogger updates Prometheus metrics and logs request completion cleanly.
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -103,16 +123,16 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(sw, r)
 
 			duration := time.Since(start)
-			path := r.URL.Path
+			handlerName := getHandlerName(r)
 			statusStr := strconv.Itoa(sw.statusCode)
 
-			// Update Prometheus metrics
-			HttpRequestsTotal.WithLabelValues(r.Method, path, statusStr).Inc()
-			HttpRequestDuration.WithLabelValues(r.Method, path).Observe(duration.Seconds())
+			// Update Prometheus metrics with explicit handler name
+			HttpRequestsTotal.WithLabelValues(r.Method, handlerName, statusStr).Inc()
+			HttpRequestDuration.WithLabelValues(r.Method, handlerName).Observe(duration.Seconds())
 
-			// Track errors specifically
+			// Track errors specifically with explicit handler name
 			if sw.statusCode >= 400 {
-				HttpErrorsTotal.WithLabelValues(r.Method, path, statusStr).Inc()
+				HttpErrorsTotal.WithLabelValues(r.Method, handlerName, statusStr).Inc()
 			}
 		})
 	}
@@ -245,7 +265,7 @@ func realIP(r *http.Request) string {
 }
 
 // RateLimiterMiddleware enforces token bucket rate limiting per real client IP.
-func RateLimiterMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
+func RateLimiterMiddleware(rl *RateLimiter, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := realIP(r)
@@ -265,6 +285,15 @@ func RateLimiterMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 
 			if !allowed {
 				traceID := GetTraceID(r.Context())
+				logger.Warn("request_completed",
+					slog.String("trace_id", traceID),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.Int("status", http.StatusTooManyRequests),
+					slog.String("result", "rate_limit_exceeded"),
+					slog.String("client_ip", ip),
+				)
+
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				_ = json.NewEncoder(w).Encode(model.ErrorResponse{

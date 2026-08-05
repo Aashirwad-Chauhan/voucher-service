@@ -282,8 +282,9 @@ func TestRateLimiterMiddleware(t *testing.T) {
 	rl := handler.NewRateLimiter(rate.Limit(1), 1)
 	defer rl.Stop()
 
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	r := chi.NewRouter()
-	r.Use(handler.RateLimiterMiddleware(rl))
+	r.Use(handler.RateLimiterMiddleware(rl, logger))
 	r.Get("/limited", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

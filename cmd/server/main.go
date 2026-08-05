@@ -106,16 +106,16 @@ func main() {
 	voucherHandler := handler.NewVoucherHandler(svc, logger)
 	healthHandler := handler.NewHealthHandler(repo, logger)
 
-	// Rate limiter: 5 req/sec, burst 10 per IP
-	rateLimiter := handler.NewRateLimiter(rate.Limit(5), 10)
+	// Rate limiter: 30 req/sec, burst 100 per IP
+	rateLimiter := handler.NewRateLimiter(rate.Limit(30), 100)
 	defer rateLimiter.Stop()
 
 	// 5. Router Setup
 	r := chi.NewRouter()
 
 	r.Use(handler.TraceIDMiddleware)
-	r.Use(handler.RateLimiterMiddleware(rateLimiter))
 	r.Use(handler.RequestLogger(logger))
+	r.Use(handler.RateLimiterMiddleware(rateLimiter, logger))
 	r.Use(handler.RecoveryMiddleware(logger))
 
 	// 5b. Idempotency Key 24-hour TTL Cleaner Worker

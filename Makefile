@@ -22,9 +22,9 @@ docker-up:
 docker-down:
 	docker compose down -v
 
-# Run concurrent burst test against local app
+# Run concurrent burst test against local app using Go CLI
 burst:
-	./scripts/burst.sh http://localhost:8080 50
+	go run ./cmd/burst http://localhost:8080 50
 
 # Run server locally with go run
 run:
