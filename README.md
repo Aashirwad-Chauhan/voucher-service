@@ -281,26 +281,28 @@ The service includes zero-dependency background telemetry pushers:
 
 1. **Grafana Loki (`LokiPusher`)**:
    - Environment variables: `GRAFANA_LOKI_URL`, `GRAFANA_LOKI_USER`, `GRAFANA_API_KEY`.
-   - Streams unified JSON logs with `trace_id`, `latency_ms`, and `status`.
+   - Streams unified JSON logs with `trace_id`, `latency_ms`, `handler`, `status`, and `result`.
+   - Captures per-entry nanosecond timestamps to prevent Loki log deduplication drops.
 
 2. **Grafana Prometheus Remote Write (`PromPusher`)**:
    - Environment variables: `GRAFANA_PROM_URL`, `GRAFANA_PROM_USER`, `GRAFANA_PROM_KEY`.
-   - Exports metric series:
-     - `http_requests_total{status, method, path}`
-     - `http_errors_total{status, method, path}`
-     - `http_request_duration_seconds_bucket{le}` (p50, p90, p99 latencies)
+   - Exports low-cardinality, handler-normalized metric series:
+     - `http_requests_total{method, handler, status}`
+     - `http_errors_total{method, handler, status}`
+     - `http_request_duration_seconds_bucket{method, handler, le}` (p50, p90, p99 latencies)
      - `voucher_redemptions_total{result}`
 
 ---
 
 ## 💡 Key Architectural Decisions
 
-1. **PostgreSQL Atomic CAS Over Redis**: Avoided dual-write state drift by using single SQL Compare-and-Swap statements.
+1. **1-Shot PL/pgSQL Atomic Function Over Multi-Query Transactions**: Packed 6 SQL queries into a single native PL/pgSQL stored function (`redeem_voucher`), cutting network round-trips from 6 to 1 and dropping `p99` latency from 490ms to <80ms.
 2. **SHA-256 Idempotency Fingerprinting**: Replays matching requests (`200 OK`) and rejects payload key mismatches (`409 Conflict`).
-3. **24-Hour Idempotency TTL**: Background hourly worker purges expired keys to maintain minimal index size.
-4. **In-Memory Rate Limiter**: Enforces sliding-window IP rate limits (`HTTP 429`) without external Redis dependencies.
+3. **24-Hour Idempotency TTL**: Background hourly worker purges expired keys to maintain minimal index size, backed by a composite B-Tree index `(key, created_at)`.
+4. **Token-Bucket Rate Limiter (`golang.org/x/time/rate`)**: Enforces sliding-window IP rate limits (`HTTP 429`) with automatic channel cleanup and structured `rate_limit_exceeded` telemetry.
+5. **Security & Memory Hardening**: Guarded `/debug/pprof/*` endpoints with `AdminKeyMiddleware` (`X-Admin-Key` header) and integrated dynamic `automemlimit` (90% cgroup v2 container RAM).
 
-For a full deep-dive into trade-offs and AI delegation details, see [`WRITEUP.md`](file:///c:/Users/ASUS/OneDrive/Desktop/Repos/voucher-service/WRITEUP.md).
+For a full deep-dive into trade-offs and telemetry analysis, see [`WRITEUP.md`](file:///c:/Users/ASUS/OneDrive/Desktop/Repos/voucher-service/WRITEUP.md).
 
 ---
 
