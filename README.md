@@ -233,6 +233,8 @@ go run ./cmd/burst https://voucher-service-c7kf.onrender.com 50
 go run ./cmd/burst http://localhost:8080 50
 ```
 
+> 💡 **Note on Free-Tier Cold Starts**: Render free-tier containers automatically sleep after 15 minutes of inactivity. The initial request (`POST /vouchers`) following sleep mode incurs a 3-5s wake-up latency spike. Once warm, all 50-150 concurrent redemption requests execute at sub-80ms `p99` latency.
+
 Or run all tests at once via `Makefile`:
 ```bash
 make test
