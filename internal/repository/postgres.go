@@ -58,104 +58,59 @@ func (r *PostgresRepository) CreateVoucher(ctx context.Context, code string, max
 }
 
 func (r *PostgresRepository) RedeemVoucher(ctx context.Context, code, userID, idempotencyKey string) (*model.RedeemResponse, bool, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// 1. Check idempotency_keys table
-	var existingFingerprint string
-	var existingRespCode int
-	var existingRespBody []byte
-
-	idempotencyQuery := `
-		SELECT fingerprint, response_code, response_body
-		FROM idempotency_keys
-		WHERE key = $1 AND created_at > NOW() - INTERVAL '24 hours'
-	`
-	err = tx.QueryRow(ctx, idempotencyQuery, idempotencyKey).Scan(
-		&existingFingerprint, &existingRespCode, &existingRespBody,
-	)
-
-	if err == nil {
-		// Key exists — verify fingerprint
-		expectedFingerprint := computeFingerprint(code, userID)
-		if existingFingerprint != expectedFingerprint {
-			return nil, false, model.ErrIdempotencyConflict
-		}
-
-		// Replay original response
-		var resp model.RedeemResponse
-		if err := json.Unmarshal(existingRespBody, &resp); err != nil {
-			return nil, false, fmt.Errorf("failed to unmarshal idempotency response: %w", err)
-		}
-		return &resp, true, nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, fmt.Errorf("error checking idempotency key: %w", err)
-	}
-
-	// 2. Atomic check and decrement (CAS query)
-	var voucherID uuid.UUID
-	var remaining int
-
-	casQuery := `
-		UPDATE vouchers
-		SET remaining = remaining - 1
-		WHERE code = $1 AND remaining > 0
-		RETURNING id, remaining
-	`
-	err = tx.QueryRow(ctx, casQuery, code).Scan(&voucherID, &remaining)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Distinguish between unknown voucher code vs exhausted voucher
-		var exists bool
-		checkQuery := `SELECT EXISTS(SELECT 1 FROM vouchers WHERE code = $1)`
-		if err := tx.QueryRow(ctx, checkQuery, code).Scan(&exists); err != nil {
-			return nil, false, fmt.Errorf("failed to check voucher existence: %w", err)
-		}
-
-		if !exists {
-			return nil, false, model.ErrVoucherNotFound
-		}
-		return nil, false, model.ErrVoucherExhausted
-	} else if err != nil {
-		return nil, false, fmt.Errorf("atomic decrement failed: %w", err)
-	}
-
-	// 3. Record redemption
-	redemptionID := uuid.New()
-	insertRedemptionQuery := `
-		INSERT INTO redemptions (id, voucher_id, user_id, idempotency_key)
-		VALUES ($1, $2, $3, $4)
-	`
-	if _, err := tx.Exec(ctx, insertRedemptionQuery, redemptionID, voucherID, userID, idempotencyKey); err != nil {
-		return nil, false, fmt.Errorf("failed to record redemption: %w", err)
-	}
-
-	// 4. Save idempotency record
-	resp := model.RedeemResponse{
-		RedemptionID: redemptionID,
-		Remaining:    remaining,
-	}
-	respBytes, err := json.Marshal(resp)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to marshal redeem response: %w", err)
+	if code == "" || userID == "" || idempotencyKey == "" {
+		return nil, false, model.ErrInvalidInput
 	}
 
 	fingerprint := computeFingerprint(code, userID)
-	insertIdempotencyQuery := `
-		INSERT INTO idempotency_keys (key, fingerprint, voucher_code, response_code, response_body)
-		VALUES ($1, $2, $3, $4, $5)
+	query := `
+		SELECT out_result_status, out_redemption_id, out_remaining, out_response_body
+		FROM redeem_voucher($1, $2, $3, $4)
 	`
-	if _, err := tx.Exec(ctx, insertIdempotencyQuery, idempotencyKey, fingerprint, code, 200, respBytes); err != nil {
-		return nil, false, fmt.Errorf("failed to record idempotency key: %w", err)
+
+	var (
+		resultStatus string
+		redemptionID *uuid.UUID
+		remaining    int
+		respBody     []byte
+	)
+
+	err := r.pool.QueryRow(ctx, query, code, userID, idempotencyKey, fingerprint).Scan(
+		&resultStatus, &redemptionID, &remaining, &respBody,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("redeem_voucher query failed: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, false, fmt.Errorf("failed to commit transaction: %w", err)
-	}
+	switch resultStatus {
+	case "granted":
+		if redemptionID == nil {
+			return nil, false, fmt.Errorf("missing redemption_id for granted status")
+		}
+		return &model.RedeemResponse{
+			RedemptionID: *redemptionID,
+			Remaining:    remaining,
+		}, false, nil
 
-	return &resp, false, nil
+	case "replay":
+		var resp model.RedeemResponse
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return nil, false, fmt.Errorf("failed to unmarshal replay response: %w", err)
+		}
+		return &resp, true, nil
+
+	case "conflict":
+		return nil, false, model.ErrIdempotencyConflict
+
+	case "exhausted":
+		return nil, false, model.ErrVoucherExhausted
+
+	case "not_found":
+		return nil, false, model.ErrVoucherNotFound
+
+	default:
+		return nil, false, fmt.Errorf("unknown result status: %s", resultStatus)
+	}
 }
 
 func (r *PostgresRepository) GetVoucher(ctx context.Context, code string) (*model.VoucherStatusResponse, error) {
