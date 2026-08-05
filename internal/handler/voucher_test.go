@@ -15,6 +15,7 @@ import (
 	"github.com/aashirwad/voucher-service/internal/model"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 )
 
 type mockService struct {
@@ -138,6 +139,12 @@ func TestCreateVoucherEndpoint(t *testing.T) {
 		t.Errorf("Expected status 409, got %d", recDup.Code)
 	}
 
+	var errResp model.ErrorResponse
+	_ = json.Unmarshal(recDup.Body.Bytes(), &errResp)
+	if errResp.TraceID == "" {
+		t.Errorf("Expected trace_id in ErrorResponse")
+	}
+
 	// Test 3: Malformed JSON (400)
 	bodyBad := []byte(`{invalid_json}`)
 	reqBad := httptest.NewRequest("POST", "/vouchers", bytes.NewBuffer(bodyBad))
@@ -234,5 +241,66 @@ func TestRedeemVoucherEndpoint_StatusCodes(t *testing.T) {
 				t.Errorf("X-Trace-ID header should be present")
 			}
 		})
+	}
+}
+
+func TestAdminKeyMiddleware(t *testing.T) {
+	r := chi.NewRouter()
+	r.Use(handler.AdminKeyMiddleware("secret-admin-key"))
+	r.Get("/protected", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Case 1: Missing Key (403)
+	req1 := httptest.NewRequest("GET", "/protected", nil)
+	rec1 := httptest.NewRecorder()
+	r.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden when key missing, got %d", rec1.Code)
+	}
+
+	// Case 2: Wrong Key (403)
+	req2 := httptest.NewRequest("GET", "/protected", nil)
+	req2.Header.Set("X-Admin-Key", "wrong-key")
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 Forbidden when key wrong, got %d", rec2.Code)
+	}
+
+	// Case 3: Valid Key (200)
+	req3 := httptest.NewRequest("GET", "/protected", nil)
+	req3.Header.Set("X-Admin-Key", "secret-admin-key")
+	rec3 := httptest.NewRecorder()
+	r.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusOK {
+		t.Errorf("Expected 200 OK when key valid, got %d", rec3.Code)
+	}
+}
+
+func TestRateLimiterMiddleware(t *testing.T) {
+	rl := handler.NewRateLimiter(rate.Limit(1), 1)
+	defer rl.Stop()
+
+	r := chi.NewRouter()
+	r.Use(handler.RateLimiterMiddleware(rl))
+	r.Get("/limited", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Req 1: Allowed (200)
+	req1 := httptest.NewRequest("GET", "/limited", nil)
+	rec1 := httptest.NewRecorder()
+	r.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Errorf("Expected 200, got %d", rec1.Code)
+	}
+
+	// Req 2: Exceeded (429)
+	req2 := httptest.NewRequest("GET", "/limited", nil)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Errorf("Expected 429 Too Many Requests, got %d", rec2.Code)
 	}
 }

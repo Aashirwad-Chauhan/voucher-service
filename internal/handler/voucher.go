@@ -29,6 +29,7 @@ func (h *VoucherHandler) CreateVoucher(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	traceID := GetTraceID(r.Context())
 
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2MB cap
 	var req model.CreateVoucherRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.logger.Warn("request_completed",
@@ -123,6 +124,7 @@ func (h *VoucherHandler) RedeemVoucher(w http.ResponseWriter, r *http.Request) {
 	traceID := GetTraceID(r.Context())
 	code := chi.URLParam(r, "code")
 
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20) // 2MB cap
 	var req model.RedeemRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		VoucherRedemptionsTotal.WithLabelValues("error").Inc()
@@ -183,7 +185,7 @@ func (h *VoucherHandler) RedeemVoucher(w http.ResponseWriter, r *http.Request) {
 
 		case errors.Is(err, model.ErrIdempotencyConflict):
 			VoucherRedemptionsTotal.WithLabelValues("conflict").Inc()
-			h.logger.Warn("request_completed",
+			h.logger.Error("request_completed",
 				slog.String("trace_id", traceID),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
@@ -338,5 +340,6 @@ func (h *VoucherHandler) writeError(w http.ResponseWriter, status int, errType, 
 	_ = json.NewEncoder(w).Encode(model.ErrorResponse{
 		Error:   errType,
 		Message: message,
+		TraceID: traceID,
 	})
 }

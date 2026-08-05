@@ -5,7 +5,7 @@ test: test-unit
 
 # Run unit tests only (no DB required, instant)
 test-unit:
-	go test ./internal/service ./internal/handler -v
+	go test ./internal/config ./internal/service ./internal/handler -v
 
 # Run integration tests against local Docker PostgreSQL
 test-integration:

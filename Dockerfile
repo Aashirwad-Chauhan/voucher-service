@@ -20,7 +20,7 @@ RUN apk --no-cache add ca-certificates wget \
 
 WORKDIR /app
 
-ENV GOMEMLIMIT=384MiB
+# Note: GOMEMLIMIT is dynamically set at runtime by automemlimit (reads cgroup v2 limits)
 
 COPY --from=builder /app/server .
 COPY --from=builder /app/migrations ./migrations

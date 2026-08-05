@@ -161,9 +161,11 @@ func (r *PostgresRepository) RedeemVoucher(ctx context.Context, code, userID, id
 func (r *PostgresRepository) GetVoucher(ctx context.Context, code string) (*model.VoucherStatusResponse, error) {
 	query := `
 		SELECT v.id, v.code, v.remaining, v.max_redemptions,
-		       (SELECT COUNT(*) FROM redemptions r WHERE r.voucher_id = v.id) as redemptions_count
+		       COUNT(red.id) AS redemptions_count
 		FROM vouchers v
+		LEFT JOIN redemptions red ON red.voucher_id = v.id
 		WHERE v.code = $1
+		GROUP BY v.id, v.code, v.remaining, v.max_redemptions
 	`
 
 	var resp model.VoucherStatusResponse

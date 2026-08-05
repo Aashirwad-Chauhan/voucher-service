@@ -78,6 +78,7 @@ type VoucherStatusResponse struct {
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 type HealthResponse struct {

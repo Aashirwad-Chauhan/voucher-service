@@ -3,6 +3,7 @@ module github.com/aashirwad/voucher-service
 go 1.25.0
 
 require (
+	github.com/KimMachineGun/automemlimit v0.7.5
 	github.com/go-chi/chi/v5 v5.3.1
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/uuid v1.6.0
@@ -11,6 +12,7 @@ require (
 	github.com/klauspost/compress v1.19.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/prometheus v0.313.2
+	golang.org/x/time v0.15.0
 )
 
 require (
@@ -21,6 +23,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect

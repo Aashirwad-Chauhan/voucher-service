@@ -34,7 +34,7 @@ func (h *HealthHandler) Readyz(w http.ResponseWriter, r *http.Request) {
 	traceID := GetTraceID(r.Context())
 
 	if err := h.repo.Ping(r.Context()); err != nil {
-		h.logger.Warn("readiness_check_failed",
+		h.logger.Error("readiness_check_failed",
 			slog.String("trace_id", traceID),
 			slog.Any("error", err),
 		)

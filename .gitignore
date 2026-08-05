@@ -7,6 +7,8 @@ secrets.txt
 # Assignment (do not push)
 assignment-aashirwad-voucher-redemption-challenge.pdf
 IMPLEMENTATION_GUIDE.md
+OPTIMIZATION.md
+make.ps1
 
 # Go
 /vendor/

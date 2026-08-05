@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/KimMachineGun/automemlimit"
 	"github.com/aashirwad/voucher-service/internal/config"
 	"github.com/aashirwad/voucher-service/internal/handler"
 	"github.com/aashirwad/voucher-service/internal/observability"
@@ -20,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -72,8 +74,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	poolConfig.MaxConns = 20
-	poolConfig.MinConns = 2
+	poolConfig.MaxConns = 10
+	poolConfig.MinConns = 1
 	poolConfig.MaxConnIdleTime = 5 * time.Minute
 	poolConfig.MaxConnLifetime = 30 * time.Minute
 
@@ -104,26 +106,39 @@ func main() {
 	voucherHandler := handler.NewVoucherHandler(svc, logger)
 	healthHandler := handler.NewHealthHandler(repo, logger)
 
+	// Rate limiter: 5 req/sec, burst 10 per IP
+	rateLimiter := handler.NewRateLimiter(rate.Limit(5), 10)
+	defer rateLimiter.Stop()
+
 	// 5. Router Setup
 	r := chi.NewRouter()
 
 	r.Use(handler.TraceIDMiddleware)
-	r.Use(handler.RateLimiterMiddleware(300, 1*time.Minute)) // 300 requests per minute per IP
+	r.Use(handler.RateLimiterMiddleware(rateLimiter))
 	r.Use(handler.RequestLogger(logger))
 	r.Use(handler.RecoveryMiddleware(logger))
 
 	// 5b. Idempotency Key 24-hour TTL Cleaner Worker
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			deleted, err := repo.CleanExpiredIdempotencyKeys(cleanCtx)
-			cleanCancel()
-			if err != nil {
-				logger.Warn("idempotency_ttl_cleaner_failed", slog.Any("error", err))
-			} else if deleted > 0 {
-				logger.Info("idempotency_ttl_cleaned", slog.Int64("deleted_keys", deleted))
+		for {
+			select {
+			case <-ticker.C:
+				cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				deleted, err := repo.CleanExpiredIdempotencyKeys(cleanCtx)
+				cleanCancel()
+				if err != nil {
+					logger.Error("idempotency_ttl_cleaner_failed", slog.Any("error", err))
+				} else if deleted > 0 {
+					logger.Info("idempotency_ttl_cleaned", slog.Int64("deleted_keys", deleted))
+				}
+			case <-workerCtx.Done():
+				logger.Info("idempotency_ttl_cleaner_stopped")
+				return
 			}
 		}
 	}()
@@ -133,15 +148,18 @@ func main() {
 	r.Get("/readyz", healthHandler.Readyz)
 	r.Handle("/metrics", promhttp.Handler())
 
-	// Profiling (pprof)
-	r.HandleFunc("/debug/pprof/", pprof.Index)
-	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	r.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
-	r.HandleFunc("/debug/pprof/goroutine", pprof.Handler("goroutine").ServeHTTP)
-	r.HandleFunc("/debug/pprof/allocs", pprof.Handler("allocs").ServeHTTP)
+	// Protected Profiling Routes (pprof)
+	r.Group(func(r chi.Router) {
+		r.Use(handler.AdminKeyMiddleware(cfg.AdminKey))
+		r.HandleFunc("/debug/pprof/", pprof.Index)
+		r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		r.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
+		r.HandleFunc("/debug/pprof/goroutine", pprof.Handler("goroutine").ServeHTTP)
+		r.HandleFunc("/debug/pprof/allocs", pprof.Handler("allocs").ServeHTTP)
+	})
 
 	// Core API
 	r.Post("/vouchers", voucherHandler.CreateVoucher)
@@ -150,11 +168,12 @@ func main() {
 
 	// 6. Start HTTP Server
 	server := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serverErrors := make(chan error, 1)
@@ -172,6 +191,9 @@ func main() {
 		logger.Error("server_error", slog.Any("error", err))
 	case sig := <-shutdown:
 		logger.Info("shutdown_signal_received", slog.String("signal", sig.String()))
+
+		workerCancel()
+		rateLimiter.Stop()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()

@@ -17,6 +17,7 @@ type Config struct {
 	GrafanaPromURL  string
 	GrafanaPromUser string
 	GrafanaPromKey  string
+	AdminKey        string
 }
 
 func Load() (*Config, error) {
@@ -46,6 +47,7 @@ func Load() (*Config, error) {
 		GrafanaPromURL:  os.Getenv("GRAFANA_PROM_URL"),
 		GrafanaPromUser: os.Getenv("GRAFANA_PROM_USER"),
 		GrafanaPromKey:  os.Getenv("GRAFANA_PROM_KEY"),
+		AdminKey:        os.Getenv("ADMIN_KEY"),
 	}
 
 	if cfg.DatabaseURL == "" {

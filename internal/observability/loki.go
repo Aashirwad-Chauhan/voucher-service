@@ -22,14 +22,20 @@ type LokiPushRequest struct {
 	Streams []LokiStream `json:"streams"`
 }
 
+type logEntry struct {
+	line      string
+	timestamp time.Time
+}
+
 type LokiPusher struct {
 	url      string
 	userID   string
 	apiKey   string
 	client   *http.Client
-	logChan  chan string
+	logChan  chan logEntry
 	wg       sync.WaitGroup
 	stopChan chan struct{}
+	stopOnce sync.Once
 }
 
 func NewLokiPusher(cfg *config.Config) *LokiPusher {
@@ -38,11 +44,14 @@ func NewLokiPusher(cfg *config.Config) *LokiPusher {
 	}
 
 	lp := &LokiPusher{
-		url:      cfg.GrafanaLokiURL + "/loki/api/v1/push",
-		userID:   cfg.GrafanaLokiUser,
-		apiKey:   cfg.GrafanaAPIKey,
-		client:   &http.Client{Timeout: 5 * time.Second},
-		logChan:  make(chan string, 2000),
+		url:    cfg.GrafanaLokiURL + "/loki/api/v1/push",
+		userID: cfg.GrafanaLokiUser,
+		apiKey: cfg.GrafanaAPIKey,
+		client: &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: SharedTransport,
+		},
+		logChan:  make(chan logEntry, 2000),
 		stopChan: make(chan struct{}),
 	}
 
@@ -56,8 +65,12 @@ func (lp *LokiPusher) Push(logLine string) {
 	if lp == nil {
 		return
 	}
+	entry := logEntry{
+		line:      logLine,
+		timestamp: time.Now(),
+	}
 	select {
-	case lp.logChan <- logLine:
+	case lp.logChan <- entry:
 	default:
 		// Drop log under extreme channel saturation to avoid backpressure on main application
 	}
@@ -70,16 +83,16 @@ func (lp *LokiPusher) worker() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	var buffer []string
+	var buffer []logEntry
 
 	for {
 		select {
-		case line, ok := <-lp.logChan:
+		case entry, ok := <-lp.logChan:
 			if !ok {
 				lp.flush(buffer)
 				return
 			}
-			buffer = append(buffer, line)
+			buffer = append(buffer, entry)
 			if len(buffer) >= 100 {
 				lp.flush(buffer)
 				buffer = nil
@@ -96,15 +109,14 @@ func (lp *LokiPusher) worker() {
 	}
 }
 
-func (lp *LokiPusher) flush(lines []string) {
-	if len(lines) == 0 {
+func (lp *LokiPusher) flush(entries []logEntry) {
+	if len(entries) == 0 {
 		return
 	}
 
-	values := make([][]string, len(lines))
-	nowNano := strconv.FormatInt(time.Now().UnixNano(), 10)
-	for i, line := range lines {
-		values[i] = []string{nowNano, line}
+	values := make([][]string, len(entries))
+	for i, entry := range entries {
+		values[i] = []string{strconv.FormatInt(entry.timestamp.UnixNano(), 10), entry.line}
 	}
 
 	reqBody := LokiPushRequest{
@@ -136,14 +148,19 @@ func (lp *LokiPusher) flush(lines []string) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 }
 
 func (lp *LokiPusher) Close() {
 	if lp == nil {
 		return
 	}
-	close(lp.stopChan)
+	lp.stopOnce.Do(func() {
+		close(lp.stopChan)
+	})
 	lp.wg.Wait()
 }
 

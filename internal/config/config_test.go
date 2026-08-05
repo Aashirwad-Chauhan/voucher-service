@@ -32,10 +32,12 @@ func TestConfigLoad_CustomEnv(t *testing.T) {
 	os.Setenv("PORT", "9090")
 	os.Setenv("LOG_LEVEL", "debug")
 	os.Setenv("DATABASE_URL", "postgres://test:test@localhost:5432/testdb")
+	os.Setenv("ADMIN_KEY", "secret123")
 	defer func() {
 		os.Unsetenv("PORT")
 		os.Unsetenv("LOG_LEVEL")
 		os.Unsetenv("DATABASE_URL")
+		os.Unsetenv("ADMIN_KEY")
 	}()
 
 	cfg, err := config.Load()
@@ -51,5 +53,8 @@ func TestConfigLoad_CustomEnv(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://test:test@localhost:5432/testdb" {
 		t.Errorf("Expected custom DatabaseURL, got %s", cfg.DatabaseURL)
+	}
+	if cfg.AdminKey != "secret123" {
+		t.Errorf("Expected AdminKey secret123, got %s", cfg.AdminKey)
 	}
 }

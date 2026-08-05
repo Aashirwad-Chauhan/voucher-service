@@ -32,10 +32,13 @@ func NewPromPusher(cfg *config.Config) *PromPusher {
 	}
 
 	pp := &PromPusher{
-		url:      cfg.GrafanaPromURL,
-		userID:   cfg.GrafanaPromUser,
-		apiKey:   cfg.GrafanaPromKey,
-		client:   &http.Client{Timeout: 5 * time.Second},
+		url:    cfg.GrafanaPromURL,
+		userID: cfg.GrafanaPromUser,
+		apiKey: cfg.GrafanaPromKey,
+		client: &http.Client{
+			Timeout:   5 * time.Second,
+			Transport: SharedTransport,
+		},
 		stopChan: make(chan struct{}),
 	}
 
@@ -67,6 +70,21 @@ func (pp *PromPusher) worker() {
 	}
 }
 
+func prependLabel(name, value string, rest []prompb.Label) []prompb.Label {
+	res := make([]prompb.Label, 1+len(rest))
+	res[0] = prompb.Label{Name: name, Value: value}
+	copy(res[1:], rest)
+	return res
+}
+
+func prependTwoLabels(name1, value1, name2, value2 string, rest []prompb.Label) []prompb.Label {
+	res := make([]prompb.Label, 2+len(rest))
+	res[0] = prompb.Label{Name: name1, Value: value1}
+	res[1] = prompb.Label{Name: name2, Value: value2}
+	copy(res[2:], rest)
+	return res
+}
+
 func (pp *PromPusher) pushMetrics() {
 	metricFamilies, err := prometheus.DefaultGatherer.Gather()
 	if err != nil {
@@ -79,22 +97,22 @@ func (pp *PromPusher) pushMetrics() {
 	for _, mf := range metricFamilies {
 		baseName := mf.GetName()
 		for _, m := range mf.GetMetric() {
-			baseLabels := []prompb.Label{
-				{Name: "app", Value: "voucher-service"},
-				{Name: "env", Value: "production"},
-			}
-			for _, l := range m.GetLabel() {
+			mLabels := m.GetLabel()
+			baseLabels := make([]prompb.Label, 2, 2+len(mLabels))
+			baseLabels[0] = prompb.Label{Name: "app", Value: "voucher-service"}
+			baseLabels[1] = prompb.Label{Name: "env", Value: "production"}
+			for _, l := range mLabels {
 				baseLabels = append(baseLabels, prompb.Label{Name: l.GetName(), Value: l.GetValue()})
 			}
 
 			if m.Counter != nil {
-				labels := append([]prompb.Label{{Name: "__name__", Value: baseName}}, baseLabels...)
+				labels := prependLabel("__name__", baseName, baseLabels)
 				timeSeries = append(timeSeries, prompb.TimeSeries{
 					Labels:  labels,
 					Samples: []prompb.Sample{{Value: m.Counter.GetValue(), Timestamp: nowMs}},
 				})
 			} else if m.Gauge != nil {
-				labels := append([]prompb.Label{{Name: "__name__", Value: baseName}}, baseLabels...)
+				labels := prependLabel("__name__", baseName, baseLabels)
 				timeSeries = append(timeSeries, prompb.TimeSeries{
 					Labels:  labels,
 					Samples: []prompb.Sample{{Value: m.Gauge.GetValue(), Timestamp: nowMs}},
@@ -103,14 +121,14 @@ func (pp *PromPusher) pushMetrics() {
 				h := m.Histogram
 
 				// 1. _count
-				countLabels := append([]prompb.Label{{Name: "__name__", Value: baseName + "_count"}}, baseLabels...)
+				countLabels := prependLabel("__name__", baseName+"_count", baseLabels)
 				timeSeries = append(timeSeries, prompb.TimeSeries{
 					Labels:  countLabels,
 					Samples: []prompb.Sample{{Value: float64(h.GetSampleCount()), Timestamp: nowMs}},
 				})
 
 				// 2. _sum
-				sumLabels := append([]prompb.Label{{Name: "__name__", Value: baseName + "_sum"}}, baseLabels...)
+				sumLabels := prependLabel("__name__", baseName+"_sum", baseLabels)
 				timeSeries = append(timeSeries, prompb.TimeSeries{
 					Labels:  sumLabels,
 					Samples: []prompb.Sample{{Value: h.GetSampleSum(), Timestamp: nowMs}},
@@ -126,11 +144,7 @@ func (pp *PromPusher) pushMetrics() {
 						hasInf = true
 					}
 
-					bucketLabels := append([]prompb.Label{
-						{Name: "__name__", Value: baseName + "_bucket"},
-						{Name: "le", Value: leStr},
-					}, baseLabels...)
-
+					bucketLabels := prependTwoLabels("__name__", baseName+"_bucket", "le", leStr, baseLabels)
 					timeSeries = append(timeSeries, prompb.TimeSeries{
 						Labels:  bucketLabels,
 						Samples: []prompb.Sample{{Value: float64(b.GetCumulativeCount()), Timestamp: nowMs}},
@@ -139,11 +153,7 @@ func (pp *PromPusher) pushMetrics() {
 
 				// Ensure +Inf bucket is present for PromQL histogram_quantile
 				if !hasInf {
-					infBucketLabels := append([]prompb.Label{
-						{Name: "__name__", Value: baseName + "_bucket"},
-						{Name: "le", Value: "+Inf"},
-					}, baseLabels...)
-
+					infBucketLabels := prependTwoLabels("__name__", baseName+"_bucket", "le", "+Inf", baseLabels)
 					timeSeries = append(timeSeries, prompb.TimeSeries{
 						Labels:  infBucketLabels,
 						Samples: []prompb.Sample{{Value: float64(h.GetSampleCount()), Timestamp: nowMs}},
@@ -180,11 +190,14 @@ func (pp *PromPusher) pushMetrics() {
 		slog.Warn("prom_remote_write_error", slog.Any("error", err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		slog.Warn("prom_remote_write_rejected", slog.Int("status", resp.StatusCode), slog.String("body", string(respBody)))
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		slog.Error("prom_remote_write_rejected", slog.Int("status", resp.StatusCode), slog.String("body", string(respBody)))
 	}
 }
 
