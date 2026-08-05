@@ -226,9 +226,6 @@ go test ./internal/repository -v -count=1
 #### Run Live Concurrency Burst Tool (Cross-Platform Go CLI)
 To test dense parallel traffic (50 simultaneous requests) against a local or production server:
 ```bash
-# Test against live Render production deployment:
-go run ./cmd/burst https://voucher-service-c7kf.onrender.com 50
-
 # Test against local server:
 go run ./cmd/burst http://localhost:8080 50
 ```
